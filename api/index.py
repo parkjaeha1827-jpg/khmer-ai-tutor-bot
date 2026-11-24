@@ -229,20 +229,19 @@ async def synthesize_speech(text: str, voice: str) -> bytes:
 app = FastAPI(title="Khmer AI Tutor Bot API", version="1.0.0")
 
 @app.get("/")
-@app.get("/api")
-@app.get("/api/webhook")
-async def health_check():
+@app.get("/{path:path}")
+async def health_check(path: str = ""):
     return {
         "status": "online",
         "service": "Khmer AI Tutor Bot",
         "model": GEMINI_MODEL,
-        "runtime": "Vercel Serverless Python"
+        "runtime": "Vercel Serverless Python",
+        "path": path
     }
 
 @app.post("/")
-@app.post("/webhook")
-@app.post("/api/webhook")
-async def telegram_webhook(request: Request):
+@app.post("/{path:path}")
+async def telegram_webhook(request: Request, path: str = ""):
     try:
         update = await request.json()
     except Exception:
