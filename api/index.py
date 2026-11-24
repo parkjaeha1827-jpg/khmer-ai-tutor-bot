@@ -228,6 +228,33 @@ async def synthesize_speech(text: str, voice: str) -> bytes:
 # FastAPI Application
 app = FastAPI(title="Khmer AI Tutor Bot API", version="1.0.0")
 
+@app.get("/set-webhook")
+async def trigger_set_webhook():
+    """Trigger Telegram setWebhook directly from Vercel datacenter."""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            res = await client.post(
+                f"{TELEGRAM_API_BASE}/setWebhook",
+                json={
+                    "url": "https://khmer-ai-tutor-bot.vercel.app/api/webhook",
+                    "allowed_updates": ["message", "edited_message"],
+                    "drop_pending_updates": True
+                }
+            )
+            return res.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.get("/webhook-info")
+async def trigger_get_webhook_info():
+    """Trigger Telegram getWebhookInfo directly from Vercel datacenter."""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            res = await client.get(f"{TELEGRAM_API_BASE}/getWebhookInfo")
+            return res.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 @app.get("/")
 @app.get("/{path:path}")
 async def health_check(path: str = ""):
