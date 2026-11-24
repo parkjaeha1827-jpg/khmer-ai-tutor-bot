@@ -257,7 +257,21 @@ async def trigger_get_webhook_info():
 
 @app.get("/")
 @app.get("/{path:path}")
-async def health_check(path: str = ""):
+async def health_check(request: Request, path: str = ""):
+    req_path = request.headers.get("x-matched-path") or request.headers.get("x-invoke-path") or path
+    if "set-webhook" in req_path or request.query_params.get("set_webhook"):
+        return await trigger_set_webhook()
+    if "webhook-info" in req_path or request.query_params.get("webhook_info"):
+        return await trigger_get_webhook_info()
+    return {
+        "status": "online",
+        "service": "Khmer AI Tutor Bot",
+        "model": GEMINI_MODEL,
+        "runtime": "Vercel Serverless Python",
+        "path": path,
+        "matched_path": request.headers.get("x-matched-path"),
+        "x_invoke_path": request.headers.get("x-invoke-path")
+    }
     return {
         "status": "online",
         "service": "Khmer AI Tutor Bot",
