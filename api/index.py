@@ -268,9 +268,11 @@ async def health_check(request: Request, path: str = ""):
         "service": "Khmer AI Tutor Bot",
         "model": GEMINI_MODEL,
         "runtime": "Vercel Serverless Python",
-        "path": path,
-        "matched_path": request.headers.get("x-matched-path"),
-        "x_invoke_path": request.headers.get("x-invoke-path")
+        "configured": {
+            "has_bot_token": bool(TELEGRAM_BOT_TOKEN),
+            "has_gemini_key": bool(GEMINI_API_KEY),
+            "has_allowed_user": bool(ALLOWED_USER_ID)
+        }
     }
     return {
         "status": "online",
