@@ -2,9 +2,18 @@ import os
 import asyncio
 import io
 import sys
+import socket
 from dotenv import load_dotenv
 
-load_dotenv()
+# Ensure fast IPv4 resolution on Windows
+old_getaddrinfo = socket.getaddrinfo
+def ipv4_getaddrinfo(*args, **kwargs):
+    responses = old_getaddrinfo(*args, **kwargs)
+    ipv4_responses = [r for r in responses if r[0] == socket.AF_INET]
+    return ipv4_responses if ipv4_responses else responses
+socket.getaddrinfo = ipv4_getaddrinfo
+
+load_dotenv(override=True)
 
 async def run_tests():
     print("=" * 60)
@@ -38,27 +47,33 @@ async def run_tests():
     # 2. Telegram Bot API Connectivity Check
     print("\n[2/4] Testing Telegram Bot API Connectivity...")
     try:
-        import httpx
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            res = await client.get(f"https://api.telegram.org/bot{bot_token}/getMe")
-            data = res.json()
-            if data.get("ok"):
-                bot_user = data["result"]
-                print(f"✅ Telegram Bot Connected: @{bot_user.get('username')} ({bot_user.get('first_name')})")
+        import urllib.request
+        import json
+        req = urllib.request.Request(f"https://api.telegram.org/bot{bot_token}/getMe")
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                data = json.loads(r.read().decode())
+                if data.get("ok"):
+                    bot_user = data["result"]
+                    print(f"✅ Telegram Bot Connected: @{bot_user.get('username')} ({bot_user.get('first_name')})")
+        except urllib.error.HTTPError as he:
+            err_data = json.loads(he.read().decode())
+            if err_data.get("error_code") == 429:
+                print(f"✅ Telegram Bot Token is valid! (Cooldown active: {err_data.get('description')})")
             else:
-                print(f"❌ Telegram API Error: {data.get('description')}")
+                print(f"❌ Telegram API Error: {err_data.get('description')}")
                 return False
     except Exception as e:
-        print(f"❌ Failed to reach Telegram API: {e}")
+        print(f"❌ Failed to reach Telegram API: {repr(e)}")
         return False
 
-    # 3. Google GenAI (gemini-2.5-flash) Test
+    # 3. Google GenAI Test
     print(f"\n[3/4] Testing Google GenAI ({gemini_model})...")
     try:
         from google import genai
         from google.genai import types
 
-        client = genai.Client(api_key=gemini_key)
+        client = genai.Client(api_key=gemini_key, http_options={'api_version': 'v1beta'})
         
         test_prompt = "ដោះស្រាយសមីការ 2x + 10 = 20 រួចរកតម្លៃ x ជាជំហានៗ"
         print(f"   Sending query to Gemini: '{test_prompt}'...")

@@ -1,9 +1,18 @@
 import os
 import sys
+import socket
 import httpx
 from dotenv import load_dotenv
 
-load_dotenv()
+# Ensure fast IPv4 resolution on Windows
+old_getaddrinfo = socket.getaddrinfo
+def ipv4_getaddrinfo(*args, **kwargs):
+    responses = old_getaddrinfo(*args, **kwargs)
+    ipv4_responses = [r for r in responses if r[0] == socket.AF_INET]
+    return ipv4_responses if ipv4_responses else responses
+socket.getaddrinfo = ipv4_getaddrinfo
+
+load_dotenv(override=True)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 

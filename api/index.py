@@ -1,6 +1,7 @@
 import os
 import re
 import io
+import socket
 import logging
 from typing import Optional
 from fastapi import FastAPI, Request, Response
@@ -11,7 +12,15 @@ from google import genai
 from google.genai import types
 import edge_tts
 
-load_dotenv()
+# Ensure fast IPv4 resolution on Windows
+old_getaddrinfo = socket.getaddrinfo
+def ipv4_getaddrinfo(*args, **kwargs):
+    responses = old_getaddrinfo(*args, **kwargs)
+    ipv4_responses = [r for r in responses if r[0] == socket.AF_INET]
+    return ipv4_responses if ipv4_responses else responses
+socket.getaddrinfo = ipv4_getaddrinfo
+
+load_dotenv(override=True)
 
 # Logging setup
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -20,7 +29,7 @@ logger = logging.getLogger("telegram_tutor_bot")
 # Configuration
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest").strip()
 ALLOWED_USER_ID = os.getenv("ALLOWED_USER_ID", "").strip()
 KHMER_VOICE = os.getenv("KHMER_VOICE", "km-KH-PisethNeural").strip()
 ENGLISH_VOICE = os.getenv("ENGLISH_VOICE", "en-US-AriaNeural").strip()
@@ -63,8 +72,32 @@ def get_gemini_client() -> genai.Client:
     if _gemini_client is None:
         if not GEMINI_API_KEY:
             raise ValueError("GEMINI_API_KEY is not configured.")
-        _gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+        _gemini_client = genai.Client(api_key=GEMINI_API_KEY, http_options={"api_version": "v1beta"})
     return _gemini_client
+
+def call_gemini(contents, system_instruction=SYSTEM_INSTRUCTION) -> str:
+    """Call Gemini with automatic model fallback."""
+    client = get_gemini_client()
+    candidate_models = [GEMINI_MODEL, "gemini-flash-lite-latest", "gemini-3.8-flash"]
+    last_error = None
+    for model_name in list(dict.fromkeys(candidate_models)):
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    temperature=0.7,
+                )
+            )
+            if response.text:
+                return response.text
+        except Exception as e:
+            logger.warning(f"Model {model_name} failed: {e}. Trying next fallback...")
+            last_error = e
+    if last_error:
+        raise last_error
+    return "សូមអភ័យទោស ខ្ញុំមិនអាចបង្កើតចម្លើយបានទេ។"
 
 # Helper Functions
 def is_user_allowed(user_id: int | str) -> bool:
@@ -92,10 +125,16 @@ def clean_text_for_tts(text: str) -> str:
     text = re.sub(r"\n{2,}", "\n", text)
     return text.strip()
 
+# Helper for reliable AsyncClient
+def get_http_client(timeout: float = 30.0) -> httpx.AsyncClient:
+    """Create an AsyncClient with IPv4 preference to avoid IPv6 timeouts."""
+    transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
+    return httpx.AsyncClient(transport=transport, timeout=timeout)
+
 # Telegram HTTP Helper Functions
 async def send_chat_action(chat_id: int | str, action: str = "typing"):
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with get_http_client(timeout=10.0) as client:
             await client.post(
                 f"{TELEGRAM_API_BASE}/sendChatAction",
                 json={"chat_id": chat_id, "action": action}
@@ -108,7 +147,7 @@ async def send_telegram_message(chat_id: int | str, text: str):
     chunk_size = 4000
     chunks = [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)] or [text]
     
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with get_http_client(timeout=30.0) as client:
         for chunk in chunks:
             # First try sending with Markdown formatting
             try:
@@ -144,7 +183,7 @@ async def send_telegram_voice(chat_id: int | str, audio_bytes: bytes, caption: s
         if caption:
             data["caption"] = caption[:1024]
         
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with get_http_client(timeout=60.0) as client:
             res = await client.post(
                 f"{TELEGRAM_API_BASE}/sendVoice",
                 data=data,
@@ -158,7 +197,7 @@ async def send_telegram_voice(chat_id: int | str, audio_bytes: bytes, caption: s
 async def download_telegram_file(file_id: str) -> Optional[bytes]:
     """Get file path from Telegram and download raw bytes."""
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with get_http_client(timeout=30.0) as client:
             res = await client.get(
                 f"{TELEGRAM_API_BASE}/getFile",
                 params={"file_id": file_id}
@@ -262,7 +301,7 @@ async def telegram_webhook(request: Request):
             return {"ok": True, "status": "audio_download_failed"}
 
         try:
-            # Pass audio directly to Gemini 2.5 Flash
+            # Pass audio directly to Gemini
             mime_type = voice_info.get("mime_type", "audio/ogg")
             audio_part = types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)
             
@@ -272,15 +311,7 @@ async def telegram_webhook(request: Request):
                 "with clear explanations and step-by-step logic."
             )
             
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=[audio_part, prompt],
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_INSTRUCTION,
-                    temperature=0.7,
-                )
-            )
-            reply_text = response.text or "សូមអភ័យទោស ខ្ញុំមិនអាចស្តាប់បានច្បាស់ទេ។ សូមសាកល្បងនិយាយម្តងទៀត។"
+            reply_text = call_gemini(contents=[audio_part, prompt])
 
             # Send text reply first
             await send_telegram_message(chat_id, reply_text)
@@ -318,15 +349,7 @@ async def telegram_webhook(request: Request):
 
         try:
             image_part = types.Part.from_bytes(data=photo_bytes, mime_type="image/jpeg")
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=[image_part, photo_prompt],
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_INSTRUCTION,
-                    temperature=0.7,
-                )
-            )
-            reply_text = response.text or "មិនអាចអានលំហាត់ក្នុងរូបភាពនេះបានទេ។ សូមថតឱ្យកាន់តែច្បាស់។"
+            reply_text = call_gemini(contents=[image_part, photo_prompt])
             await send_telegram_message(chat_id, reply_text)
             return {"ok": True, "status": "photo_processed"}
         except Exception as e:
@@ -338,15 +361,7 @@ async def telegram_webhook(request: Request):
     if text_content:
         await send_chat_action(chat_id, "typing")
         try:
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=text_content,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_INSTRUCTION,
-                    temperature=0.7,
-                )
-            )
-            reply_text = response.text or "សូមអភ័យទោស ខ្ញុំមិនអាចបង្កើតចម្លើយបានទេ។"
+            reply_text = call_gemini(contents=text_content)
             await send_telegram_message(chat_id, reply_text)
             return {"ok": True, "status": "text_processed"}
         except Exception as e:
